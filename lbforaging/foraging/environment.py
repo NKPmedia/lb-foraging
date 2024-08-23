@@ -2,7 +2,7 @@ from collections import namedtuple, defaultdict
 from enum import Enum
 from itertools import product
 import logging
-from typing import Iterable
+from typing import Iterable, List, Sequence
 
 import gymnasium as gym
 from gymnasium.utils import seeding
@@ -27,7 +27,7 @@ class CellEntity(Enum):
 
 
 class Player:
-    def __init__(self):
+    def __init__(self, id: int):
         self.controller = None
         self.position = None
         self.level = None
@@ -36,6 +36,7 @@ class Player:
         self.reward = 0
         self.history = None
         self.current_step = None
+        self.id = id
 
     def setup(self, position, level, field_size):
         self.history = []
@@ -94,10 +95,11 @@ class ForagingEnv(gym.Env):
         observe_agent_levels=True,
         penalty=0.0,
         render_mode=None,
+        players_fullObservers: Sequence[int] = [],
     ):
         self.logger = logging.getLogger(__name__)
         self.render_mode = render_mode
-        self.players = [Player() for _ in range(players)]
+        self.players = [Player(i) for i in range(players)]
 
         self.field = np.zeros(field_size, np.int32)
 
@@ -180,6 +182,8 @@ class ForagingEnv(gym.Env):
         self.viewer = None
 
         self.n_agents = len(self.players)
+
+        self.players_fullObservers = players_fullObservers
 
     def seed(self, seed=None):
         if seed is not None:
@@ -449,12 +453,15 @@ class ForagingEnv(gym.Env):
         return list(product(*[self._valid_actions[player] for player in self.players]))
 
     def _make_obs(self, player):
+        player_sight = self.sight if not player.id in self.players_fullObservers else max(self.rows, self.cols)
         return self.Observation(
             actions=self._valid_actions[player],
             players=[
                 self.PlayerObservation(
                     position=self._transform_to_neighborhood(
-                        player.position, self.sight, a.position
+                        player.position,
+                        player_sight,
+                        a.position
                     ),
                     level=a.level,
                     is_self=a == player,
@@ -465,22 +472,24 @@ class ForagingEnv(gym.Env):
                 if (
                     min(
                         self._transform_to_neighborhood(
-                            player.position, self.sight, a.position
+                            player.position,
+                            player_sight,
+                            a.position
                         )
                     )
                     >= 0
                 )
                 and max(
                     self._transform_to_neighborhood(
-                        player.position, self.sight, a.position
+                        player.position, player_sight, a.position
                     )
                 )
-                <= 2 * self.sight
+                <= 2 * player_sight
             ],
             # todo also check max?
-            field=np.copy(self.neighborhood(*player.position, self.sight)),
+            field=np.copy(self.neighborhood(*player.position, player_sight)),
             game_over=self.game_over,
-            sight=self.sight,
+            sight=player_sight,
             current_step=self.current_step,
         )
 
@@ -598,9 +607,6 @@ class ForagingEnv(gym.Env):
             # setting seed
             super().reset(seed=seed, options=options)
 
-        if self.render_mode == "human":
-            self.render()
-
         self.field = np.zeros(self.field_size, np.int32)
         self.spawn_players(self.min_player_level, self.max_player_level)
         player_levels = sorted([player.level for player in self.players])
@@ -612,6 +618,10 @@ class ForagingEnv(gym.Env):
             if self.max_food_level is not None
             else np.array([sum(player_levels[:3])] * self.max_num_food),
         )
+
+        if self.render_mode == "human":
+            self.render()
+
         self.current_step = 0
         self._game_over = False
         self._gen_valid_moves()
